@@ -1,0 +1,347 @@
+// Configuration
+const GOOGLE_SHEET_ID = 'YOUR_SHEET_ID_HERE';
+const SHEET_NAME = 'Sheet1'; // Change to your sheet name
+const GOOGLE_SHEET_URL = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${SHEET_NAME}`;
+
+// DOM Elements
+const tableBody = document.getElementById('table-body');
+const totalBudgetEl = document.getElementById('total-budget');
+const totalUtilizedEl = document.getElementById('total-utilized');
+const physicalProgressEl = document.getElementById('physical-progress');
+const financialProgressEl = document.getElementById('financial-progress');
+const lastUpdatedEl = document.getElementById('last-updated');
+const refreshBtn = document.getElementById('refresh-btn');
+const componentFilter = document.getElementById('component-filter');
+const statusFilter = document.getElementById('status-filter');
+
+// Chart instances
+let componentChart = null;
+let progressChart = null;
+
+// Initialize dashboard
+async function initDashboard() {
+    await fetchData();
+    setupEventListeners();
+}
+
+// Fetch data from Google Sheets
+async function fetchData() {
+    try {
+        const response = await fetch(GOOGLE_SHEET_URL);
+        const csvText = await response.text();
+        const data = parseCSV(csvText);
+        
+        updateDashboard(data);
+        updateFilters(data);
+        updateLastUpdated();
+        
+        return data;
+    } catch (error) {
+        console.error('Error fetching data:', error);
+        showError('Failed to fetch data. Please check the Google Sheet configuration.');
+        return [];
+    }
+}
+
+// Parse CSV to JSON
+function parseCSV(csvText) {
+    const rows = csvText.split('\n');
+    const headers = rows[0].split(',').map(h => h.trim());
+    
+    return rows.slice(1).map(row => {
+        const values = row.split(',');
+        const obj = {};
+        headers.forEach((header, index) => {
+            obj[header] = values[index] ? values[index].trim() : '';
+        });
+        return obj;
+    });
+}
+
+// Update dashboard with data
+function updateDashboard(data) {
+    if (!data || data.length === 0) return;
+    
+    // Update table
+    updateTable(data);
+    
+    // Calculate summary metrics
+    calculateSummary(data);
+    
+    // Update charts
+    updateCharts(data);
+}
+
+// Update data table
+function updateTable(data) {
+    tableBody.innerHTML = '';
+    
+    data.forEach((row, index) => {
+        const tr = document.createElement('tr');
+        
+        // Format financial values with commas
+        const financialTarget = formatNumber(row['Financial Targets']);
+        const financialAchieved = formatNumber(row['Financial Achievements']);
+        
+        tr.innerHTML = `
+            <td>${row['Sl. No.'] || index + 1}</td>
+            <td>${row['Component'] || 'N/A'}</td>
+            <td>${row['Subcomponent'] || 'N/A'}</td>
+            <td>${row['Physical Targets'] || '0'}</td>
+            <td>${row['Physical Achievements'] || '0'}</td>
+            <td>₹${financialTarget}</td>
+            <td>₹${financialAchieved}</td>
+            <td>${row['Utilization %'] || '0'}%</td>
+            <td class="status-${row['Status'] ? row['Status'].toLowerCase().replace(' ', '-') : ''}">
+                ${row['Status'] || 'N/A'}
+            </td>
+        `;
+        
+        tableBody.appendChild(tr);
+    });
+}
+
+// Calculate summary metrics
+function calculateSummary(data) {
+    let totalBudget = 0;
+    let totalUtilized = 0;
+    let totalPhysicalTarget = 0;
+    let totalPhysicalAchieved = 0;
+    
+    data.forEach(row => {
+        const budget = parseFloat(row['Financial Targets']) || 0;
+        const utilized = parseFloat(row['Financial Achievements']) || 0;
+        const physicalTarget = parseFloat(row['Physical Targets']) || 0;
+        const physicalAchieved = parseFloat(row['Physical Achievements']) || 0;
+        
+        totalBudget += budget;
+        totalUtilized += utilized;
+        totalPhysicalTarget += physicalTarget;
+        totalPhysicalAchieved += physicalAchieved;
+    });
+    
+    const physicalProgress = totalPhysicalTarget > 0 
+        ? ((totalPhysicalAchieved / totalPhysicalTarget) * 100).toFixed(1)
+        : 0;
+    
+    const financialProgress = totalBudget > 0
+        ? ((totalUtilized / totalBudget) * 100).toFixed(1)
+        : 0;
+    
+    // Update UI
+    totalBudgetEl.textContent = `₹${formatNumber(totalBudget.toFixed(2))}`;
+    totalUtilizedEl.textContent = `₹${formatNumber(totalUtilized.toFixed(2))}`;
+    physicalProgressEl.textContent = `${physicalProgress}%`;
+    financialProgressEl.textContent = `${financialProgress}%`;
+}
+
+// Update charts
+function updateCharts(data) {
+    // Group data by component
+    const componentData = {};
+    const progressData = {
+        components: [],
+        physicalProgress: [],
+        financialProgress: []
+    };
+    
+    data.forEach(row => {
+        const component = row['Component'] || 'Unknown';
+        const budget = parseFloat(row['Financial Targets']) || 0;
+        const physicalProgress = parseFloat(row['Physical Achievements']) || 0;
+        const financialProgress = parseFloat(row['Utilization %']) || 0;
+        
+        // Component distribution
+        componentData[component] = (componentData[component] || 0) + budget;
+        
+        // Progress data
+        if (!progressData.components.includes(component)) {
+            progressData.components.push(component);
+            progressData.physicalProgress.push(physicalProgress);
+            progressData.financialProgress.push(financialProgress);
+        }
+    });
+    
+    // Component Distribution Chart
+    updateComponentChart(componentData);
+    
+    // Progress Comparison Chart
+    updateProgressChart(progressData);
+}
+
+function updateComponentChart(componentData) {
+    const ctx = document.getElementById('componentChart').getContext('2d');
+    
+    if (componentChart) {
+        componentChart.destroy();
+    }
+    
+    componentChart = new Chart(ctx, {
+        type: 'pie',
+        data: {
+            labels: Object.keys(componentData),
+            datasets: [{
+                data: Object.values(componentData),
+                backgroundColor: [
+                    '#667eea', '#764ba2', '#f093fb', '#f5576c',
+                    '#4facfe', '#00f2fe', '#43e97b', '#38f9d7'
+                ],
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'right',
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            return `${context.label}: ₹${formatNumber(context.raw)}`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+function updateProgressChart(progressData) {
+    const ctx = document.getElementById('progressChart').getContext('2d');
+    
+    if (progressChart) {
+        progressChart.destroy();
+    }
+    
+    progressChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: progressData.components,
+            datasets: [
+                {
+                    label: 'Physical Progress (%)',
+                    data: progressData.physicalProgress,
+                    backgroundColor: '#4CAF50',
+                    borderColor: '#388E3C',
+                    borderWidth: 1
+                },
+                {
+                    label: 'Financial Progress (%)',
+                    data: progressData.financialProgress,
+                    backgroundColor: '#2196F3',
+                    borderColor: '#1976D2',
+                    borderWidth: 1
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    max: 100,
+                    title: {
+                        display: true,
+                        text: 'Progress (%)'
+                    }
+                },
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Components'
+                    }
+                }
+            },
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            return `${context.dataset.label}: ${context.raw}%`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Update filter options
+function updateFilters(data) {
+    const components = [...new Set(data.map(row => row['Component']).filter(Boolean))];
+    
+    componentFilter.innerHTML = `
+        <option value="all">All Components</option>
+        ${components.map(comp => `<option value="${comp}">${comp}</option>`).join('')}
+    `;
+}
+
+// Format numbers with commas
+function formatNumber(num) {
+    return parseFloat(num).toLocaleString('en-IN', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0
+    });
+}
+
+// Update last updated timestamp
+function updateLastUpdated() {
+    const now = new Date();
+    const options = { 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        timeZoneName: 'short'
+    };
+    
+    lastUpdatedEl.textContent = `Last Updated: ${now.toLocaleDateString('en-IN', options)}`;
+}
+
+// Show error message
+function showError(message) {
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'error-message';
+    errorDiv.innerHTML = `
+        <i class="fas fa-exclamation-triangle"></i>
+        <span>${message}</span>
+    `;
+    errorDiv.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: #F44336;
+        color: white;
+        padding: 15px;
+        border-radius: 8px;
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    `;
+    
+    document.body.appendChild(errorDiv);
+    
+    setTimeout(() => {
+        errorDiv.remove();
+    }, 5000);
+}
+
+// Setup event listeners
+function setupEventListeners() {
+    refreshBtn.addEventListener('click', () => {
+        refreshBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Refreshing...';
+        fetchData().then(() => {
+            refreshBtn.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh Data';
+        });
+    });
+    
+    // Auto-refresh every 30 minutes
+    setInterval(fetchData, 30 * 60 * 1000);
+}
+
+// Initialize when page loads
+document.addEventListener('DOMContentLoaded', initDashboard);
